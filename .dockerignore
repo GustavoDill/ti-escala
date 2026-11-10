@@ -1,0 +1,16 @@
+node_modules
+dist
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+.cache
+escala.csv
+sessions
+*.log
+README.md
+PLAN.md
+TASKS.md
+AGENTS.md
+

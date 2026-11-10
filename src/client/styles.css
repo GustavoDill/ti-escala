@@ -1,0 +1,116 @@
+@import "tailwindcss";
+
+@layer base {
+  body {
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  }
+
+  code, pre, .font-mono {
+    font-family: 'JetBrains Mono', monospace;
+  }
+}
+
+/* Native <dialog> modal scroll containment & backdrop rules (modern-web-guidance: dialog) */
+dialog:modal {
+  overscroll-behavior: contain;
+}
+
+dialog::backdrop {
+  overflow: hidden;
+  overscroll-behavior: contain;
+  background-color: rgba(2, 6, 23, 0.72);
+  backdrop-filter: blur(4px);
+}
+
+/* Responsive sticky data table wrapper (modern-web-guidance: responsive-table) */
+.table-wrapper {
+  overflow: auto;
+  max-inline-size: 100%;
+  max-block-size: calc(100vh - 250px);
+  container-type: inline-size;
+}
+
+.schedule-table {
+  border-collapse: separate;
+  border-spacing: 0;
+  min-inline-size: 100%;
+}
+
+.schedule-table thead {
+  position: sticky;
+  inset-block-start: 0;
+  z-index: 20;
+}
+
+.schedule-table tbody th.sticky-col-1 {
+  position: sticky;
+  inset-inline-start: 0;
+  z-index: 10;
+}
+
+.schedule-table tbody td.sticky-col-2,
+.schedule-table thead th.sticky-col-2 {
+  position: sticky;
+  inset-inline-start: 84px;
+  z-index: 10;
+}
+
+.schedule-table thead th.sticky-col-1 {
+  position: sticky;
+  inset-inline-start: 0;
+  z-index: 30;
+}
+
+.schedule-table thead th.sticky-col-2 {
+  z-index: 30;
+}
+
+/* Sortable header button styling (modern-web-guidance: sortable-table) */
+.schedule-table th:has(> button.sort-btn) {
+  padding: 0;
+}
+
+.schedule-table th > button.sort-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.375rem;
+  inline-size: 100%;
+  block-size: 100%;
+  min-block-size: 28px;
+  padding: 0.5rem 0.625rem;
+  text-align: start;
+  font-weight: inherit;
+  color: inherit;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+
+.schedule-table th > button.sort-btn:focus-visible {
+  outline: 2px solid #6366f1;
+  outline-offset: -2px;
+}
+
+/* Complex layout containment (modern-web-guidance: interactions-in-complex-layouts) */
+.isolated-section {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 320px auto 520px;
+}
+
+@supports not (content-visibility: auto) {
+  .isolated-section {
+    contain: layout style paint;
+  }
+}
+
+/* Visually hidden status region for screen readers (modern-web-guidance: sortable-table) */
+.sr-status {
+  position: absolute;
+  inline-size: 1px;
+  block-size: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
