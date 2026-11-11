@@ -202,10 +202,44 @@ ALTER TABLE public.escala_auth ENABLE ROW LEVEL SECURITY;
   - `builder` stage: Installs dependencies and builds the frontend + TypeScript backend bundle.
   - `runner` stage: Lightweight `node:22-alpine` image running as non-root user, exposing `PORT` (default `3000` / `10000` on Render).
 - **Environment Variables**:
-  - `PORT` (provided by Render)
+  - `PORT` (provided by Render or `.env`, e.g., `35001` in local dev; dynamically read by both `src/server/config.ts` and `vite.config.ts` proxy)
   - `SUPABASE_URL`
   - `SUPABASE_SERVICE_ROLE_KEY` (or `SUPABASE_KEY` with storage & auth table access)
-  - `SUPABASE_BUCKET` (e.g. `escala`)
+  - `SUPABASE_BUCKET` (e.g. `escala_storage`)
   - `SUPABASE_FILE_PATH` (default `escala.csv`)
-  - `INITIAL_ADMIN_PASSWORD` / `INITIAL_SYSTEM_PASSWORD` (optional bootstrap helper to generate SHA-512 hashes on first setup)
+  - `SUPABASE_AUTH_TABLE` (default `escala_auth`)
 
+
+---
+
+## 8. Frontend Redesign & Android WebView Integration (`TASK-016`)
+
+### 8.1 Goal
+- Modern, simple-for-end-user UI, inspired visually by `escala-calendar.onrender.com` (no code or assets copied, per Section 4 of `AGENTS.md`).
+- The Android app stops bundling a local copy of the schedule. It opens this web app in a WebView instead.
+
+### 8.2 Worker Selection Persistence ("whoami")
+- The selected worker (`matricula`) is stored in `localStorage` under a single key (for example `escala.whoami`). Cookies are not used, because they would be sent to the server on every request for no benefit.
+- On load, the app reads the stored `matricula`. If it matches a worker in the dataset, that worker is pre-selected in the Calendário (por colaborador) view and in the Comparar view.
+- If no value is stored, or the stored worker no longer exists, the app falls back to the first worker, as it does today.
+- Every read and write is wrapped in try/catch. The page must still render if storage is blocked or cleared.
+- This is a per-viewer convenience, not shared state, so `localStorage` is the right fit.
+
+### 8.3 WebView Compatibility Requirements
+- No dependency on the `/api/escala/raw` download route for display. That route stays available for export and for backward compatibility.
+- The page works inside an Android WebView: relative API paths, no `window.open` for core flows, no reliance on file downloads for viewing (exports may still download).
+- Layout is responsive from phone width (about 360px) up, with no horizontal page scroll outside the Grid view, which scrolls inside its own container.
+- Open question for the Android side: whether the WebView has DOM storage enabled (`domStorageEnabled = true`). Without it, `localStorage` does not persist between app launches. The Android app must enable it.
+- Optional follow-up (not in this task): accept `?matricula=` in the URL so the Android app can pass the selection explicitly as a fallback.
+
+### 8.4 Visual Direction
+- Simplified default: one clear entry screen with the team's current status (who is working today, days off, vacations), with the detailed views one tap away.
+- Clean card-based layout, large touch targets, a neutral palette with clear status colors (working, `FOLGA`, `FÉRIAS`), and light/dark support following the system setting.
+- Keep all existing features (filters, three views, Edit Mode, exports). Only their presentation changes unless listed otherwise.
+
+### 8.5 Acceptance Criteria
+1. Selecting a worker and reloading (or reopening the Android WebView) keeps that worker selected.
+2. Clearing `localStorage` returns the app to the default selection without errors.
+3. The app renders at 360px width with no horizontal page scroll on the default view.
+4. `GET /api/escala/raw` still returns the CSV as before (covered by `tests/backend.test.ts`).
+5. Edit Mode, exports, and the missing-CSV abort screen still work.
