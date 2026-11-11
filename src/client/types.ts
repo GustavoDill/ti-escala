@@ -14,7 +14,7 @@ export type {
   WorkerScheduleRow,
 };
 
-export type ViewMode = 'calendar' | 'compare' | 'grid';
+export type ViewMode = 'home' | 'calendar' | 'compare' | 'grid';
 
 export type ShiftCategory =
   | 'work'
@@ -102,15 +102,15 @@ export function classifyShiftValue(val: string | undefined): ShiftCategory {
 export function getShiftBadgeClasses(category: ShiftCategory): string {
   switch (category) {
     case 'work':
-      return 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30';
+      return 'bg-transparent text-slate-300 border-slate-700/60';
     case 'folga':
-      return 'bg-amber-500/15 text-amber-300 border-amber-500/30';
+      return 'bg-blue-500/15 text-blue-300 border-blue-500/30';
     case 'ferias':
-      return 'bg-sky-500/15 text-sky-300 border-sky-500/30';
+      return 'bg-purple-500/15 text-purple-300 border-purple-500/30';
     case 'atestado':
       return 'bg-rose-500/15 text-rose-300 border-rose-500/30';
     case 'feriado':
-      return 'bg-purple-500/15 text-purple-300 border-purple-500/30';
+      return 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30';
     default:
       return 'bg-slate-800/60 text-slate-400 border-slate-700/50';
   }

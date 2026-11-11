@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   Calendar as CalendarIcon,
   Clock,
@@ -8,21 +8,126 @@ import {
   Users,
   Check,
   X,
+  ChevronLeft,
 } from 'lucide-react';
+import { getNationalHoliday } from '../holidays.js';
+import { currentMonthKey, pickMonthKey } from '../monthSync.js';
 import {
   classifyShiftValue,
   getShiftBadgeClasses,
   parseBrDate,
   QUICK_SHIFT_VALUES,
   type ParsedDateInfo,
+  type ShiftCategory,
   type WorkerScheduleRow,
 } from '../types.js';
+
+// Today's date as DD/MM/YYYY (the format of dataset dates) and as a YYYY-MM month key
+function todayBrDate(now: Date = new Date()): string {
+  return `${String(now.getDate()).padStart(2, '0')}/${String(now.getMonth() + 1).padStart(2, '0')}/${now.getFullYear()}`;
+}
 
 interface CalendarViewProps {
   workers: WorkerScheduleRow[];
   dates: string[];
   editMode: boolean;
   onCellEdit: (matricula: string, date: string, newValue: string) => void;
+  whoami?: string | null;
+  onWhoamiChange?: (matricula: string) => void;
+}
+
+// Drawer roster: grouped by função (N1, N2, N3), each group ordered by shift period and start time
+interface RosterGroup {
+  funcao: string;
+  count: number; // staff working that day
+  workers: WorkerScheduleRow[];
+}
+
+const PERIOD_LABELS = ['Manhã', 'Tarde', 'Noite', 'Madrugada', '—'] as const;
+
+// 0 manhã (06–11h), 1 tarde (12–17h), 2 noite (18–23h), 3 madrugada (00–05h), 4 unknown
+function periodIndex(entrada: string): number {
+  const hour = parseInt(entrada.split(':')[0] ?? '', 10);
+  if (Number.isNaN(hour)) return 4;
+  if (hour >= 6 && hour < 12) return 0;
+  if (hour >= 12 && hour < 18) return 1;
+  if (hour >= 18) return 2;
+  return 3;
+}
+
+// Outline colour per função, matching the N1 / N2 / N3 counts in the team grid
+const ROSTER_GROUP_STYLE: Record<string, { border: string; text: string }> = {
+  N1: { border: 'border-amber-500/60 bg-amber-500/5', text: 'text-amber-300' },
+  N2: { border: 'border-cyan-500/60 bg-cyan-500/5', text: 'text-cyan-300' },
+  N3: { border: 'border-rose-500/60 bg-rose-500/5', text: 'text-rose-300' },
+};
+const DEFAULT_GROUP_STYLE = { border: 'border-slate-700 bg-slate-950/40', text: 'text-slate-300' };
+
+function rosterGroupStyle(funcao: string) {
+  return ROSTER_GROUP_STYLE[funcao] ?? DEFAULT_GROUP_STYLE;
+}
+
+function buildRosterGroups(workers: WorkerScheduleRow[], date: string): RosterGroup[] {
+  const byFuncao = new Map<string, WorkerScheduleRow[]>();
+  for (const w of workers) {
+    const key = w.funcao || '—';
+    byFuncao.set(key, [...(byFuncao.get(key) ?? []), w]);
+  }
+  const roleRank = (funcao: string) => (/^Nd$/.test(funcao) ? Number(funcao.slice(1)) : 99);
+  const funcoes = [...byFuncao.keys()].sort((a, b) => roleRank(a) - roleRank(b) || a.localeCompare(b, 'pt-BR'));
+  return funcoes.map((funcao) => {
+    const members = byFuncao.get(funcao) ?? [];
+    const working = members
+      .filter((w) => classifyShiftValue(w.days[date]) === 'work')
+      .sort(
+        (a, b) =>
+          periodIndex(a.entrada) - periodIndex(b.entrada) ||
+          a.entrada.localeCompare(b.entrada) ||
+          a.nome.localeCompare(b.nome, 'pt-BR')
+      );
+    const off = members
+      .filter((w) => classifyShiftValue(w.days[date]) !== 'work')
+      .sort((a, b) => a.nome.localeCompare(b.nome, 'pt-BR'));
+    return { funcao, count: working.length, workers: [...working, ...off] };
+  });
+}
+
+// Day of the previous or next month shown only to complete the grid (no schedule data)
+// Per-worker day cell: the status fills the whole square (folga blue, férias purple, work neutral)
+function workerCellClasses(cat: ShiftCategory, isWeekend: boolean, isToday: boolean): string {
+  if (isToday) return 'border-orange-400 ring-2 ring-orange-400 bg-orange-500/10 text-slate-100';
+  switch (cat) {
+    case 'folga':
+      return 'border-blue-500/60 bg-blue-500/25 text-blue-100';
+    case 'ferias':
+      return 'border-purple-500/60 bg-purple-500/25 text-purple-100';
+    case 'atestado':
+      return 'border-rose-500/60 bg-rose-500/20 text-rose-100';
+    case 'feriado':
+      return 'border-emerald-500/60 bg-emerald-500/20 text-emerald-100';
+    case 'work':
+      return isWeekend
+        ? 'border-slate-800/90 bg-slate-950/75 text-slate-300'
+        : 'border-slate-800/80 bg-slate-900/90 text-slate-300';
+    default:
+      return 'border-slate-800/60 bg-slate-950/60 text-slate-500';
+  }
+}
+
+interface OutsideDay {
+  outsideDay: number;
+}
+
+type GridCell = ParsedDateInfo | OutsideDay;
+
+// Holiday tag: paid at +100%, shown even when the day is a folga
+function HolidayTag({ isoDate }: { isoDate: string }) {
+  if (!getNationalHoliday(isoDate)) return null;
+  return (
+    <span className="rounded bg-emerald-500 px-0.5 text-[8px] font-bold leading-4 text-emerald-950 sm:px-1 sm:text-[9px]">
+      +100%
+    </span>
+  );
 }
 
 const WEEKDAYS_HEADER = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
@@ -32,11 +137,14 @@ export function CalendarView({
   dates,
   editMode,
   onCellEdit,
+  whoami,
+  onWhoamiChange,
 }: CalendarViewProps) {
-  const [calendarSubMode, setCalendarSubMode] = useState<'team' | 'worker'>('team');
+  const [calendarSubMode, setCalendarSubMode] = useState<'team' | 'worker'>('worker');
   const [selectedWorkerMatricula, setSelectedWorkerMatricula] = useState<string>(
-    workers[0]?.matricula || ''
+    () => workers.find((w) => w.matricula === whoami)?.matricula || workers[0]?.matricula || ''
   );
+  const [drawerOpen, setDrawerOpen] = useState(false);
   const [workerSortBy, setWorkerSortBy] = useState<'nome' | 'setor' | 'funcao' | 'entrada'>('nome');
 
   // Parse all dates and group by month (YYYY-MM)
@@ -55,16 +163,19 @@ export function CalendarView({
     return Array.from(map.values());
   }, [parsedDates]);
 
-  const [selectedMonthKey, setSelectedMonthKey] = useState<string>(
-    () => months[0]?.key || ''
+  // The calendar always opens on the current month (or the closest one in the schedule)
+  const availableMonthKeys = months.map((m) => m.key).join(',');
+  const [clockMonth, setClockMonth] = useState<string>(() => currentMonthKey());
+  const [selectedMonthKey, setSelectedMonthKey] = useState<string>(() =>
+    pickMonthKey(months.map((m) => m.key), currentMonthKey())
   );
 
   const activeMonth = useMemo(() => {
     return months.find((m) => m.key === selectedMonthKey) || months[0] || null;
   }, [months, selectedMonthKey]);
 
-  const [selectedDateRaw, setSelectedDateRaw] = useState<string>(
-    () => activeMonth?.dates[0]?.raw || dates[0] || ''
+  const [selectedDateRaw, setSelectedDateRaw] = useState<string>(() =>
+    dates.includes(todayBrDate()) ? todayBrDate() : activeMonth?.dates[0]?.raw || dates[0] || ''
   );
 
   // Inline editing state
@@ -97,19 +208,47 @@ export function CalendarView({
 
   const activeWorker = useMemo(() => {
     return (
-      sortedWorkers.find((w) => w.matricula === selectedWorkerMatricula) ||
+      sortedWorkers.find((w) => w.matricula === (whoami ?? selectedWorkerMatricula)) ||
       sortedWorkers[0] ||
       null
     );
-  }, [sortedWorkers, selectedWorkerMatricula]);
+  }, [sortedWorkers, selectedWorkerMatricula, whoami]);
 
-  // Build calendar cells for the active month with leading blank weekday slots
-  const calendarGridCells = useMemo(() => {
+  // Grid cells for the active month, padded with grayed days from the previous and next month
+  const calendarGridCells = useMemo<GridCell[]>(() => {
     if (!activeMonth || activeMonth.dates.length === 0) return [];
-    const firstWeekday = activeMonth.dates[0].weekdayIndex;
-    const blanks: Array<ParsedDateInfo | null> = Array(firstWeekday).fill(null);
-    return [...blanks, ...activeMonth.dates];
+    const first = activeMonth.dates[0];
+    const leadingCount = first.weekdayIndex;
+    const previousMonthLastDay = new Date(first.year, first.month - 1, 0).getDate();
+    const leading: GridCell[] = Array.from({ length: leadingCount }, (_, i) => ({
+      outsideDay: previousMonthLastDay - leadingCount + 1 + i,
+    }));
+    const trailingCount = (7 - ((leadingCount + activeMonth.dates.length) % 7)) % 7;
+    const trailing: GridCell[] = Array.from({ length: trailingCount }, (_, i) => ({
+      outsideDay: i + 1,
+    }));
+    return [...leading, ...activeMonth.dates, ...trailing];
   }, [activeMonth]);
+
+  // Today's date in DD/MM/YYYY, to highlight it in the grid
+  const todayRaw = useMemo(() => {
+    const d = new Date();
+    const dd = String(d.getDate()).padStart(2, '0');
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    return `${dd}/${mm}/${d.getFullYear()}`;
+  }, []);
+
+  // Keep the calendar on the current month: re-check every minute, so it also moves on at midnight
+  useEffect(() => {
+    const timer = window.setInterval(() => setClockMonth(currentMonthKey()), 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    setSelectedMonthKey(pickMonthKey(availableMonthKeys.split(',').filter(Boolean), clockMonth));
+    if (dates.includes(todayBrDate())) setSelectedDateRaw(todayBrDate());
+    // availableMonthKeys / clockMonth change only when the schedule's months or the calendar month change
+  }, [availableMonthKeys, clockMonth]);
 
   // Stats for activeWorker in activeMonth
   const workerMonthStats = useMemo(() => {
@@ -151,7 +290,7 @@ export function CalendarView({
   return (
     <div className="space-y-4">
       {/* Calendar Top Sub-Toolbar */}
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-800/90 bg-slate-900/75 p-3.5">
+      <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-800/90 bg-slate-900/75 p-2.5">
         <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
@@ -225,7 +364,7 @@ export function CalendarView({
       {calendarSubMode === 'team' ? (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
           {/* Team Monthly Calendar Grid (8 cols) */}
-          <div className="lg:col-span-8 rounded-2xl border border-slate-800/90 bg-slate-900/70 p-4 isolated-section">
+          <div className="lg:col-span-12 rounded-2xl border border-slate-800/90 bg-slate-900/70 p-4 isolated-section">
             <div className="flex items-center justify-between mb-3">
               <h2 className="text-sm font-semibold text-white flex items-center gap-2">
                 <CalendarIcon className="h-4 w-4 text-indigo-400" aria-hidden="true" />
@@ -233,18 +372,18 @@ export function CalendarView({
               </h2>
               <div className="flex items-center gap-3 text-[11px] text-slate-400">
                 <span className="inline-flex items-center gap-1">
-                  <span className="h-2 w-2 rounded-full bg-emerald-400" /> Trabalhando
+                  <span className="h-2 w-2 rounded-full border border-slate-500" /> Trabalho
                 </span>
                 <span className="inline-flex items-center gap-1">
-                  <span className="h-2 w-2 rounded-full bg-amber-400" /> Folga
+                  <span className="h-2 w-2 rounded-full bg-blue-400" /> Folga
                 </span>
                 <span className="inline-flex items-center gap-1">
-                  <span className="h-2 w-2 rounded-full bg-sky-400" /> Férias
+                  <span className="h-2 w-2 rounded-full bg-purple-400" /> Férias
                 </span>
               </div>
             </div>
 
-            <div className="grid grid-cols-7 gap-1.5 text-center mb-1.5">
+            <div className="grid grid-cols-7 gap-1 text-center mb-1.5">
               {WEEKDAYS_HEADER.map((w, idx) => (
                 <div
                   key={w}
@@ -259,26 +398,25 @@ export function CalendarView({
               ))}
             </div>
 
-            <div className="grid grid-cols-7 gap-1.5">
+            <div className="grid grid-cols-7 gap-1">
               {calendarGridCells.map((cellDate, idx) => {
-                if (!cellDate) {
+                if ('outsideDay' in cellDate) {
                   return (
                     <div
-                      key={`blank-${idx}`}
-                      className="min-h-[96px] rounded-xl border border-slate-800/30 bg-slate-950/30"
-                    />
+                      key={`outside-${idx}`}
+                      className="min-h-[56px] p-1.5 text-sm font-medium text-slate-600"
+                    >
+                      {cellDate.outsideDay}
+                    </div>
                   );
                 }
 
-                let workCount = 0;
-                let folgaCount = 0;
-                let feriasCount = 0;
+                // Working staff per função (N1 / N2 / N3) on this day
+                const roleCounts = { N1: 0, N2: 0, N3: 0 };
 
                 for (const w of sortedWorkers) {
-                  const cat = classifyShiftValue(w.days[cellDate.raw]);
-                  if (cat === 'work') workCount++;
-                  else if (cat === 'folga') folgaCount++;
-                  else if (cat === 'ferias') feriasCount++;
+                  if (classifyShiftValue(w.days[cellDate.raw]) !== 'work') continue;
+                  if (w.funcao in roleCounts) roleCounts[w.funcao as keyof typeof roleCounts]++;
                 }
 
                 const isSelected = cellDate.raw === effectiveSelectedDate;
@@ -287,8 +425,11 @@ export function CalendarView({
                   <button
                     key={cellDate.raw}
                     type="button"
-                    onClick={() => setSelectedDateRaw(cellDate.raw)}
-                    className={`min-h-[96px] rounded-xl border p-2 text-left transition-all flex flex-col justify-between cursor-pointer ${
+                    onClick={() => {
+                      setSelectedDateRaw(cellDate.raw);
+                      setDrawerOpen(true);
+                    }}
+                    className={`group relative min-h-[56px] rounded-xl border p-1.5 text-left transition-all flex flex-col justify-between cursor-pointer ${
                       isSelected
                         ? 'border-indigo-500 bg-indigo-500/15 ring-2 ring-indigo-500/30'
                         : cellDate.isWeekend
@@ -299,7 +440,9 @@ export function CalendarView({
                     <div className="flex items-center justify-between w-full">
                       <span
                         className={`inline-flex h-6 w-6 items-center justify-center rounded-lg text-xs font-bold ${
-                          isSelected
+                          cellDate.raw === todayRaw
+                            ? 'rounded-full bg-orange-400 text-slate-950'
+                            : isSelected
                             ? 'bg-indigo-500 text-white'
                             : cellDate.isWeekend
                             ? 'text-indigo-300 bg-indigo-500/10'
@@ -308,27 +451,23 @@ export function CalendarView({
                       >
                         {String(cellDate.day).padStart(2, '0')}
                       </span>
-                      <span className="text-[10px] font-mono text-slate-500">
-                        {cellDate.raw.slice(0, 5)}
+                      <span className="flex items-center gap-1">
+                        <HolidayTag isoDate={cellDate.isoDate} />
+                        <span className="hidden text-[10px] font-mono text-slate-500 sm:inline">
+                          {cellDate.raw.slice(0, 5)}
+                        </span>
                       </span>
                     </div>
 
-                    <div className="space-y-1 mt-2 w-full">
-                      <div className="flex items-center justify-between rounded-md bg-emerald-500/15 px-1.5 py-0.5 text-[11px] text-emerald-300">
-                        <span>Ativos</span>
-                        <span className="font-mono font-semibold">{workCount}</span>
-                      </div>
-                      <div className="flex items-center justify-between gap-1 text-[10px]">
-                        <span className="flex-1 rounded bg-amber-500/15 px-1 py-0.5 text-amber-300 text-center font-mono">
-                          F: {folgaCount}
-                        </span>
-                        {feriasCount > 0 && (
-                          <span className="flex-1 rounded bg-sky-500/15 px-1 py-0.5 text-sky-300 text-center font-mono">
-                            Fér: {feriasCount}
-                          </span>
-                        )}
-                      </div>
+                    <div className="mt-1 flex w-full items-center justify-between pr-0 font-mono text-[11px] font-bold sm:pr-3">
+                      <span className="text-amber-300" title="N1" aria-label={`N1: ${roleCounts.N1}`}><span className="hidden sm:inline">N1 </span>{roleCounts.N1}</span>
+                      <span className="text-cyan-300" title="N2" aria-label={`N2: ${roleCounts.N2}`}><span className="hidden sm:inline">N2 </span>{roleCounts.N2}</span>
+                      <span className="text-rose-300" title="N3" aria-label={`N3: ${roleCounts.N3}`}><span className="hidden sm:inline">N3 </span>{roleCounts.N3}</span>
                     </div>
+                    <ChevronLeft
+                      className="pointer-events-none absolute bottom-1 right-1 hidden h-4 w-4 text-slate-300 sm:block transition-transform group-hover:-translate-x-0.5 group-hover:text-indigo-300"
+                      aria-hidden="true"
+                    />
                   </button>
                 );
               })}
@@ -336,8 +475,24 @@ export function CalendarView({
           </div>
 
           {/* Selected Day Roster & Inline Editor (4 cols) */}
-          <div className="lg:col-span-4 rounded-2xl border border-slate-800/90 bg-slate-900/70 p-4 flex flex-col max-h-[680px]">
-            <div className="border-b border-slate-800 pb-3 mb-3">
+          {drawerOpen && (
+            <>
+              <div className="animate-backdrop-in fixed inset-0 z-40 bg-slate-950/60" onClick={() => setDrawerOpen(false)} aria-hidden="true" />
+              <aside
+                role="dialog"
+                aria-modal="true"
+                aria-label={`Escala do dia ${effectiveSelectedDate}`}
+                className="animate-drawer-in fixed inset-y-0 right-0 z-50 flex w-[400px] max-w-full flex-col border-l border-slate-800 bg-slate-900 p-4 shadow-2xl"
+              >
+                <button
+                  type="button"
+                  onClick={() => setDrawerOpen(false)}
+                  aria-label="Fechar painel do dia"
+                  className="absolute right-3 top-3 rounded-lg border border-slate-700 px-2 py-0.5 text-sm text-slate-300 hover:bg-slate-800 cursor-pointer"
+                >
+                  ×
+                </button>
+            <div className="border-b border-slate-800 pb-3 mb-3 pr-8">
               <div className="flex items-center justify-between">
                 <h3 className="text-sm font-semibold text-white">
                   Escala do Dia — {effectiveSelectedDate}
@@ -354,7 +509,17 @@ export function CalendarView({
             </div>
 
             <div className="overflow-y-auto space-y-2 pr-1 flex-1">
-              {sortedWorkers.map((w) => {
+              {buildRosterGroups(sortedWorkers, effectiveSelectedDate).map((group) => (
+              <section
+                key={group.funcao}
+                aria-label={`${group.funcao}: ${group.count} trabalhando`}
+                className={`space-y-2 rounded-xl border-2 p-2 ${rosterGroupStyle(group.funcao).border}`}
+              >
+                <header className="flex items-center justify-between px-1 text-xs">
+                  <span className={`font-bold ${rosterGroupStyle(group.funcao).text}`}>{group.funcao}</span>
+                  <span className="text-slate-400">{group.count} trabalhando</span>
+                </header>
+                {group.workers.map((w) => {
                 const rawVal = w.days[effectiveSelectedDate] ?? '';
                 const cat = classifyShiftValue(rawVal);
                 const isEditingThis =
@@ -381,6 +546,7 @@ export function CalendarView({
                           <span className="inline-flex items-center gap-1 font-mono text-slate-400">
                             <Clock className="h-3 w-3 text-slate-500" aria-hidden="true" />
                             {w.entrada}–{w.saida}
+                            <span className="text-slate-500">· {PERIOD_LABELS[periodIndex(w.entrada)]}</span>
                           </span>
                         </div>
                       </div>
@@ -475,57 +641,24 @@ export function CalendarView({
                     )}
                   </div>
                 );
-              })}
+                })}
+              </section>
+            ))}
             </div>
-          </div>
+              </aside>
+            </>
+          )}
         </div>
       ) : (
         /* Per-Worker Individual Calendar View */
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-          {/* Worker List Sidebar (4 cols) */}
-          <div className="lg:col-span-4 rounded-2xl border border-slate-800/90 bg-slate-900/70 p-3.5 max-h-[680px] flex flex-col">
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2.5 px-1">
-              Colaboradores ({sortedWorkers.length})
-            </h3>
-            <div className="overflow-y-auto space-y-1.5 pr-1 flex-1">
-              {sortedWorkers.map((w) => {
-                const isSelected = activeWorker?.matricula === w.matricula;
-                return (
-                  <button
-                    key={w.matricula}
-                    type="button"
-                    onClick={() => setSelectedWorkerMatricula(w.matricula)}
-                    className={`w-full rounded-xl border p-2.5 text-left transition-all cursor-pointer ${
-                      isSelected
-                        ? 'border-indigo-500 bg-indigo-500/15 text-white'
-                        : 'border-slate-800/70 bg-slate-950/50 text-slate-300 hover:border-slate-700'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-xs font-semibold truncate">{w.nome}</span>
-                      <span className="font-mono text-[11px] text-slate-400">#{w.matricula}</span>
-                    </div>
-                    <div className="flex items-center justify-between mt-1.5 text-[11px] text-slate-400">
-                      <span>
-                        {w.setor} · <strong className="text-indigo-300">{w.funcao}</strong>
-                      </span>
-                      <span className="font-mono">
-                        {w.entrada}–{w.saida}
-                      </span>
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
           {/* Individual Worker Calendar & Shift Details (8 cols) */}
-          <div className="lg:col-span-8 space-y-4">
+          <div className="lg:col-span-12 space-y-2">
             {activeWorker ? (
               <>
                 {/* Worker Shift Profile Card */}
-                <div className="rounded-2xl border border-slate-800/90 bg-slate-900/75 p-4">
-                  <div className="flex flex-wrap items-start justify-between gap-4">
+                <div className="rounded-xl border border-slate-800/90 bg-slate-900/75 px-3 py-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
                     <div>
                       <div className="flex items-center gap-2.5">
                         <h2 className="text-base font-bold text-white">{activeWorker.nome}</h2>
@@ -553,7 +686,7 @@ export function CalendarView({
                     </div>
 
                     {/* Monthly Summary Counters */}
-                    <div className="flex items-center gap-2">
+                    <div className="flex shrink-0 items-center gap-2">
                       <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 text-center">
                         <div className="text-base font-bold font-mono text-emerald-300">
                           {workerMonthStats.work}
@@ -562,19 +695,19 @@ export function CalendarView({
                           Dias Trab.
                         </div>
                       </div>
-                      <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-center">
-                        <div className="text-base font-bold font-mono text-amber-300">
+                      <div className="rounded-xl border border-blue-500/30 bg-blue-500/10 px-3 py-1.5 text-center">
+                        <div className="text-base font-bold font-mono text-blue-300">
                           {workerMonthStats.folga}
                         </div>
-                        <div className="text-[10px] uppercase tracking-wider text-amber-200/80">
+                        <div className="text-[10px] uppercase tracking-wider text-blue-200/80">
                           Folgas
                         </div>
                       </div>
-                      <div className="rounded-xl border border-sky-500/30 bg-sky-500/10 px-3 py-1.5 text-center">
-                        <div className="text-base font-bold font-mono text-sky-300">
+                      <div className="rounded-xl border border-purple-500/30 bg-purple-500/10 px-3 py-1.5 text-center">
+                        <div className="text-base font-bold font-mono text-purple-300">
                           {workerMonthStats.ferias}
                         </div>
-                        <div className="text-[10px] uppercase tracking-wider text-sky-200/80">
+                        <div className="text-[10px] uppercase tracking-wider text-purple-200/80">
                           Férias
                         </div>
                       </div>
@@ -583,8 +716,8 @@ export function CalendarView({
                 </div>
 
                 {/* Worker Monthly Calendar Grid */}
-                <div className="rounded-2xl border border-slate-800/90 bg-slate-900/70 p-4">
-                  <div className="grid grid-cols-7 gap-1.5 text-center mb-1.5">
+                <div className="flex min-h-[240px] h-[calc(100vh-18rem)] flex-col rounded-xl border border-slate-800/90 bg-slate-900/70 p-2">
+                  <div className="mb-1 grid grid-cols-7 gap-1 text-center">
                     {WEEKDAYS_HEADER.map((w, idx) => (
                       <div
                         key={w}
@@ -599,14 +732,16 @@ export function CalendarView({
                     ))}
                   </div>
 
-                  <div className="grid grid-cols-7 gap-1.5">
+                  <div className="grid min-h-0 flex-1 grid-cols-7 grid-rows-[repeat(6,minmax(36px,1fr))] gap-1">
                     {calendarGridCells.map((cellDate, idx) => {
-                      if (!cellDate) {
+                      if ('outsideDay' in cellDate) {
                         return (
                           <div
-                            key={`worker-blank-${idx}`}
-                            className="min-h-[92px] rounded-xl border border-slate-800/30 bg-slate-950/30"
-                          />
+                            key={`worker-outside-${idx}`}
+                            className="min-h-[56px] p-1.5 text-sm font-medium text-slate-600"
+                          >
+                            {cellDate.outsideDay}
+                          </div>
                         );
                       }
 
@@ -627,43 +762,41 @@ export function CalendarView({
                               value: val,
                             });
                           }}
-                          className={`min-h-[92px] rounded-xl border p-2 flex flex-col justify-between transition-all ${
-                            cellDate.isWeekend
-                              ? 'border-slate-800/90 bg-slate-950/75'
-                              : 'border-slate-800/80 bg-slate-900/90'
-                          } ${
-                            editMode
-                              ? 'cursor-pointer hover:border-indigo-500/70'
-                              : ''
+                          className={`relative flex min-h-[36px] flex-col overflow-hidden rounded-xl border transition-all ${workerCellClasses(cat, cellDate.isWeekend, cellDate.raw === todayRaw)} ${
+                            editMode ? 'cursor-pointer hover:brightness-125' : ''
                           }`}
                         >
-                          <div className="flex items-center justify-between">
-                            <span className="text-xs font-bold text-slate-200">
+                          {/* Day number and holiday / weekday sit on top of the status fill */}
+                          <div className="pointer-events-none absolute inset-x-1 top-0.5 z-10 flex h-4 items-center justify-between leading-4">
+                            <span
+                              className={
+                                cellDate.raw === todayRaw
+                                  ? 'inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-orange-400 px-1 text-[10px] font-extrabold leading-none text-slate-950'
+                                  : 'text-xs font-bold text-slate-100'
+                              }
+                            >
                               {String(cellDate.day).padStart(2, '0')}
                             </span>
-                            <span className="text-[10px] font-mono text-slate-500">
-                              {cellDate.weekdayShort}
-                            </span>
+                            {getNationalHoliday(cellDate.isoDate) ? (
+                              <HolidayTag isoDate={cellDate.isoDate} />
+                            ) : (
+                              <span
+                                className={`hidden truncate text-[10px] font-mono sm:inline ${
+                                  cellDate.raw === todayRaw ? 'font-bold text-orange-300' : 'opacity-70'
+                                }`}
+                              >
+                                {cellDate.raw === todayRaw ? 'Hoje' : cellDate.weekdayShort}
+                              </span>
+                            )}
                           </div>
 
                           {!isEditingThis ? (
-                            <div className="mt-2">
-                              <div
-                                className={`w-full rounded-lg border px-2 py-1 text-center text-xs font-mono font-semibold ${getShiftBadgeClasses(
-                                  cat
-                                )}`}
-                              >
-                                {val || '—'}
-                              </div>
-                              {cat === 'work' && (
-                                <div className="mt-1 text-center text-[10px] font-mono text-slate-400">
-                                  {activeWorker.entrada}–{activeWorker.saida}
-                                </div>
-                              )}
+                            <div className="flex flex-1 items-center justify-center px-0.5 pt-4 font-mono text-[10px] font-bold sm:px-1 sm:text-sm">
+                              {val || '—'}
                             </div>
                           ) : (
                             <div
-                              className="mt-1 space-y-1"
+                              className="flex flex-1 flex-col justify-center gap-1 px-1 pt-5 pb-1"
                               onClick={(e) => e.stopPropagation()}
                             >
                               <input

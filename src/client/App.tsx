@@ -9,7 +9,9 @@ import {
   FileText,
   Filter,
   GitCompare,
+  Home,
   Lock,
+  Menu,
   LogOut,
   RefreshCw,
   Save,
@@ -21,7 +23,10 @@ import { AuthDialog } from './components/AuthDialog.js';
 import { CalendarView } from './components/CalendarView.js';
 import { ComparisonView } from './components/ComparisonView.js';
 import { GridView } from './components/GridView.js';
+import { InicioView } from './components/InicioView.js';
 import { exportToCsv, exportToPdf, exportToXlsx } from './exportUtils.js';
+import { loadNationalHolidays } from './holidays.js';
+import { readWhoami, writeWhoami } from './whoami.js';
 import type {
   AuthRole,
   ScheduleDataset,
@@ -38,13 +43,26 @@ export function App() {
   const [abortedError, setAbortedError] = useState<string | null>(null);
 
   // Navigation & Filters
-  const [activeView, setActiveView] = useState<ViewMode>('calendar');
+  const [activeView, setActiveView] = useState<ViewMode>('home');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedSector, setSelectedSector] = useState<string>('ALL');
   const [selectedRole, setSelectedRole] = useState<string>('ALL');
+  // "whoami": colaborador escolhido, persistido no navegador (ver whoami.ts)
+  const [whoami, setWhoami] = useState<string | null>(() => readWhoami());
+
+
+  const whoamiWorker = useMemo(() => {
+    if (!dataset) return null;
+    return (
+      dataset.workers.find((w) => w.matricula === whoami) ||
+      dataset.workers[0] ||
+      null
+    );
+  }, [dataset, whoami]);
 
   // Authentication & Edit Mode state
   const [isAuthDialogOpen, setIsAuthDialogOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
   const [adminPassword, setAdminPassword] = useState<string | null>(null);
   const [authRole, setAuthRole] = useState<AuthRole | null>(null);
   const [autoSyncInline, setAutoSyncInline] = useState(true);
@@ -62,9 +80,40 @@ export function App() {
     }, 4000);
   }, []);
 
+  // Changing the "whoami" worker: persist it and confirm with a toast at the top
+  const handleWhoamiChange = useCallback(
+    (matricula: string) => {
+      setWhoami(matricula);
+      writeWhoami(matricula);
+      const worker = dataset?.workers.find((w) => w.matricula === matricula);
+      if (worker) showToast(`Atualizado funcionário atual para: ${worker.nome}`);
+    },
+    [dataset, showToast]
+  );
+
+  // Latest whoami for the search effect, so typing does not override a choice made in the picker
+  const whoamiRef = useRef(whoami);
+  whoamiRef.current = whoami;
+
+  // Search bar: when the text identifies exactly one worker (name or matrícula), that worker becomes whoami
+  useEffect(() => {
+    if (!dataset) return;
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) return;
+    const matches = dataset.workers.filter(
+      (w) => w.nome.toLowerCase().includes(query) || w.matricula.toLowerCase().includes(query)
+    );
+    if (matches.length === 1 && matches[0].matricula !== whoamiRef.current) {
+      handleWhoamiChange(matches[0].matricula);
+    }
+  }, [searchQuery, dataset, handleWhoamiChange]);
+
   const fetchSchedule = useCallback(async () => {
     setLoading(true);
     try {
+      // Feriados do ano corrente e do próximo: carregados antes da primeira renderização das tags
+      const thisYear = new Date().getFullYear();
+      await loadNationalHolidays([thisYear, thisYear + 1]);
       const res = await fetch('/api/escala');
       const body = await res.json();
 
@@ -350,44 +399,9 @@ export function App() {
     return parts.join(' · ');
   }, [selectedSector, selectedRole, filteredWorkers.length]);
 
-  return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col">
-      {/* Top Application Header */}
-      <header className="sticky top-0 z-40 border-b border-slate-800/90 bg-slate-950/90 backdrop-blur-md">
-        <div className="mx-auto max-w-[1600px] px-4 py-3 flex flex-wrap items-center justify-between gap-4">
-          {/* Brand Title */}
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500 to-violet-600 text-white shadow-lg shadow-indigo-500/20">
-              <Calendar className="h-5 w-5" aria-hidden="true" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h1 className="text-base font-bold tracking-tight text-white">
-                  TI Escala
-                </h1>
-                {editMode ? (
-                  <span className="inline-flex items-center gap-1 rounded-full border border-emerald-500/40 bg-emerald-500/15 px-2.5 py-0.5 text-[11px] font-semibold text-emerald-300">
-                    <Unlock className="h-3 w-3" aria-hidden="true" />
-                    Modo Edição ({authRole})
-                  </span>
-                ) : (
-                  <span className="inline-flex items-center gap-1 rounded-full border border-slate-700 bg-slate-800/80 px-2.5 py-0.5 text-[11px] font-medium text-slate-300">
-                    <Lock className="h-3 w-3 text-slate-400" aria-hidden="true" />
-                    Somente Leitura
-                  </span>
-                )}
-              </div>
-              <p className="text-xs text-slate-400">
-                Visualizador e Editor de Escala de Trabalho ·{' '}
-                {syncStatus?.lastSyncedAt
-                  ? `Sincronizado às ${new Date(syncStatus.lastSyncedAt).toLocaleTimeString('pt-BR')}`
-                  : 'Supabase Storage Sync'}
-              </p>
-            </div>
-          </div>
-
-          {/* Right Action Controls: Exports + Edit Mode Controls */}
-          <div className="flex flex-wrap items-center gap-2">
+  // Export + edit-mode controls: shown inline on desktop and inside the menu drawer on phones
+  const actionsContent = (
+    <>
             {dataset && !abortedError && (
               <div className="flex items-center gap-1.5 rounded-xl border border-slate-800 bg-slate-900/90 p-1">
                 <span className="px-2 text-[11px] font-medium text-slate-400 hidden sm:inline">
@@ -429,11 +443,15 @@ export function App() {
             {!editMode ? (
               <button
                 type="button"
-                onClick={() => setIsAuthDialogOpen(true)}
+                onClick={() => {
+                  setMenuOpen(false);
+                  setIsAuthDialogOpen(true);
+                }}
                 className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-3.5 py-2 text-xs font-semibold text-white shadow-sm hover:bg-indigo-500 transition-colors cursor-pointer"
               >
                 <Lock className="h-3.5 w-3.5" aria-hidden="true" />
-                Entrar no Modo Edição
+                <span className="sm:hidden">Editar</span>
+                <span className="hidden sm:inline">Entrar no Modo Edição</span>
               </button>
             ) : (
               <div className="flex flex-wrap items-center gap-2">
@@ -459,13 +477,6 @@ export function App() {
                   </button>
                 )}
 
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept=".csv,text/csv"
-                  onChange={handleCsvFileUpload}
-                  className="hidden"
-                />
                 <button
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
@@ -489,7 +500,67 @@ export function App() {
                 </button>
               </div>
             )}
+    </>
+  );
+
+  const navItems: Array<{ view: ViewMode; label: string; Icon: typeof Home }> = [
+    { view: 'home', label: 'Início', Icon: Home },
+    { view: 'calendar', label: 'Calendário', Icon: Calendar },
+    { view: 'compare', label: 'Comparar', Icon: GitCompare },
+    { view: 'grid', label: 'Planilha', Icon: Table2 },
+  ];
+
+  return (
+    <div className="h-screen overflow-hidden bg-slate-950 text-slate-100 flex flex-col">
+      {/* Top Application Header */}
+      <header className="sticky top-0 z-40 border-b border-slate-800/90 bg-slate-950/90 backdrop-blur-md">
+        <div className="mx-auto max-w-[1600px] px-4 py-2 flex flex-wrap items-center justify-between gap-3">
+          {/* Brand Title */}
+          <div className="flex items-center gap-3">
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-indigo-500 to-violet-600 text-white shadow-lg shadow-indigo-500/20">
+              <Calendar className="h-4 w-4" aria-hidden="true" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h1 className="text-base font-bold tracking-tight text-white">
+                  TI Escala
+                </h1>
+                {editMode ? (
+                  <span className="inline-flex items-center gap-1 rounded-full border border-emerald-500/40 bg-emerald-500/15 px-2.5 py-0.5 text-[11px] font-semibold text-emerald-300">
+                    <Unlock className="h-3 w-3" aria-hidden="true" />
+                    Modo Edição ({authRole})
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1 rounded-full border border-slate-700 bg-slate-800/80 px-2.5 py-0.5 text-[11px] font-medium text-slate-300">
+                    <Lock className="h-3 w-3 text-slate-400" aria-hidden="true" />
+                    Somente Leitura
+                  </span>
+                )}
+              </div>
+              <p className="hidden text-xs text-slate-400 sm:block">
+                {''}
+                {syncStatus?.lastSyncedAt
+                  ? `Sincronizado às ${new Date(syncStatus.lastSyncedAt).toLocaleTimeString('pt-BR')}`
+                  : 'Supabase Storage Sync'}
+              </p>
+            </div>
           </div>
+
+          {/* Right Action Controls (desktop); on phones these live in the menu drawer */}
+          <div className="hidden flex-wrap items-center gap-2 sm:flex">
+            {actionsContent}
+          </div>
+
+          {/* Phone menu button */}
+          <button
+            type="button"
+            onClick={() => setMenuOpen(true)}
+            aria-label="Abrir menu"
+            aria-expanded={menuOpen}
+            className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-700 bg-slate-900 text-slate-200 hover:bg-slate-800 cursor-pointer sm:hidden"
+          >
+            <Menu className="h-4 w-4" aria-hidden="true" />
+          </button>
         </div>
       </header>
 
@@ -497,7 +568,7 @@ export function App() {
       {toastMessage && (
         <div
           role="status"
-          className="fixed bottom-5 right-5 z-50 flex items-center gap-2.5 rounded-2xl border border-indigo-500/40 bg-slate-900/95 px-4 py-3 text-xs font-medium text-slate-100 shadow-2xl backdrop-blur-md"
+          className="animate-toast-in fixed left-1/2 top-3 z-50 flex -translate-x-1/2 items-center gap-2.5 rounded-2xl border border-indigo-500/40 bg-slate-900/95 px-4 py-3 text-xs font-medium text-slate-100 shadow-2xl backdrop-blur-md"
         >
           <CheckCircle2 className="h-4 w-4 text-emerald-400 shrink-0" aria-hidden="true" />
           <span>{toastMessage}</span>
@@ -505,7 +576,7 @@ export function App() {
       )}
 
       {/* Main Content Area */}
-      <main className="mx-auto w-full max-w-[1600px] flex-1 px-4 py-5">
+      <main className="mx-auto w-full max-w-[1600px] flex-1 min-h-0 overflow-y-auto px-3 py-2">
         {loading ? (
           <div className="flex flex-col items-center justify-center rounded-2xl border border-slate-800 bg-slate-900/50 py-24 text-center">
             <RefreshCw
@@ -568,16 +639,33 @@ export function App() {
             </div>
           </div>
         ) : (
-          <div className="space-y-4">
+          <div className="space-y-3">
             {/* Navigation Tabs + Global Filters Bar */}
-            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 rounded-2xl border border-slate-800/90 bg-slate-900/75 p-3">
+            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-2 rounded-xl border border-slate-800/90 bg-slate-900/75 p-2">
               {/* Accessible Tablist (modern-web-guidance: tabs) */}
               <div
                 role="tablist"
                 aria-label="Modos de visualização da escala"
                 {...({ focusgroup: 'tablist nomemory' } as Record<string, string>)}
-                className="flex items-center gap-1 overflow-x-auto"
+                className="hidden sm:flex sm:w-auto sm:shrink-0 sm:items-center"
               >
+                <button
+                  type="button"
+                  role="tab"
+                  id="tab-home"
+                  aria-selected={activeView === 'home'}
+                  {...(activeView === 'home' ? { focusgroupstart: '' } : {})}
+                  onClick={() => setActiveView('home')}
+                  className={`relative inline-flex items-center justify-center gap-2 rounded-lg px-2 py-1.5 text-xs font-semibold sm:px-3 transition-colors cursor-pointer whitespace-nowrap ${
+                    activeView === 'home'
+                      ? 'bg-indigo-500/15 text-indigo-300 after:content-[""] after:absolute after:inset-x-2 after:bottom-0 after:border-b-[3px] after:border-indigo-400'
+                      : 'text-slate-400 hover:bg-slate-800/60 hover:text-slate-200'
+                  }`}
+                >
+                  <Home className="hidden h-4 w-4 sm:block" aria-hidden="true" />
+                  Início
+                </button>
+
                 <button
                   type="button"
                   role="tab"
@@ -585,13 +673,13 @@ export function App() {
                   aria-selected={activeView === 'calendar'}
                   {...(activeView === 'calendar' ? { focusgroupstart: '' } : {})}
                   onClick={() => setActiveView('calendar')}
-                  className={`relative inline-flex items-center gap-2 rounded-xl px-4 py-2 text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap ${
+                  className={`relative inline-flex items-center justify-center gap-2 rounded-lg px-2 py-1.5 text-xs font-semibold sm:px-3 transition-colors cursor-pointer whitespace-nowrap ${
                     activeView === 'calendar'
                       ? 'bg-indigo-500/15 text-indigo-300 after:content-[""] after:absolute after:inset-x-2 after:bottom-0 after:border-b-[3px] after:border-indigo-400'
                       : 'text-slate-400 hover:bg-slate-800/60 hover:text-slate-200'
                   }`}
                 >
-                  <Calendar className="h-4 w-4" aria-hidden="true" />
+                  <Calendar className="hidden h-4 w-4 sm:block" aria-hidden="true" />
                   Calendário
                 </button>
 
@@ -602,14 +690,14 @@ export function App() {
                   aria-selected={activeView === 'compare'}
                   {...(activeView === 'compare' ? { focusgroupstart: '' } : {})}
                   onClick={() => setActiveView('compare')}
-                  className={`relative inline-flex items-center gap-2 rounded-xl px-4 py-2 text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap ${
+                  className={`relative inline-flex items-center justify-center gap-2 rounded-lg px-2 py-1.5 text-xs font-semibold sm:px-3 transition-colors cursor-pointer whitespace-nowrap ${
                     activeView === 'compare'
                       ? 'bg-indigo-500/15 text-indigo-300 after:content-[""] after:absolute after:inset-x-2 after:bottom-0 after:border-b-[3px] after:border-indigo-400'
                       : 'text-slate-400 hover:bg-slate-800/60 hover:text-slate-200'
                   }`}
                 >
-                  <GitCompare className="h-4 w-4" aria-hidden="true" />
-                  Comparar Colaboradores
+                  <GitCompare className="hidden h-4 w-4 sm:block" aria-hidden="true" />
+                  Comparar
                 </button>
 
                 <button
@@ -619,20 +707,20 @@ export function App() {
                   aria-selected={activeView === 'grid'}
                   {...(activeView === 'grid' ? { focusgroupstart: '' } : {})}
                   onClick={() => setActiveView('grid')}
-                  className={`relative inline-flex items-center gap-2 rounded-xl px-4 py-2 text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap ${
+                  className={`relative inline-flex items-center justify-center gap-2 rounded-lg px-2 py-1.5 text-xs font-semibold sm:px-3 transition-colors cursor-pointer whitespace-nowrap ${
                     activeView === 'grid'
                       ? 'bg-indigo-500/15 text-indigo-300 after:content-[""] after:absolute after:inset-x-2 after:bottom-0 after:border-b-[3px] after:border-indigo-400'
                       : 'text-slate-400 hover:bg-slate-800/60 hover:text-slate-200'
                   }`}
                 >
-                  <Table2 className="h-4 w-4" aria-hidden="true" />
-                  Planilha / Grade (Excel)
+                  <Table2 className="hidden h-4 w-4 sm:block" aria-hidden="true" />
+                  Planilha
                 </button>
               </div>
 
               {/* Global Search & Sector/Role Filters */}
               <div className="flex flex-wrap items-center gap-2">
-                <div className="relative flex-1 sm:flex-initial sm:w-64">
+                <div className="relative flex-1 sm:flex-initial sm:w-52">
                   <Search
                     className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400"
                     aria-hidden="true"
@@ -646,6 +734,21 @@ export function App() {
                     className="w-full rounded-xl border border-slate-700/90 bg-slate-950 pl-9 pr-3 py-1.5 text-xs text-slate-100 placeholder-slate-500 focus:border-indigo-500 focus:outline-none"
                   />
                 </div>
+
+                <select
+                  value={whoamiWorker?.matricula ?? ''}
+                  onChange={(e) => handleWhoamiChange(e.target.value)}
+                  aria-label="Eu sou (colaborador exibido no início)"
+                  className="min-w-0 flex-1 sm:max-w-[14rem] sm:flex-none rounded-xl border border-slate-700/90 bg-slate-950 px-3 py-1.5 text-xs text-slate-200 focus:border-indigo-500 focus:outline-none"
+                >
+                  {[...dataset.workers]
+                    .sort((a, b) => a.nome.localeCompare(b.nome, 'pt-BR'))
+                    .map((w) => (
+                      <option key={w.matricula} value={w.matricula}>
+                        {w.nome}
+                      </option>
+                    ))}
+                </select>
 
                 <div className="flex items-center gap-1.5">
                   <Filter className="h-3.5 w-3.5 text-slate-400 hidden sm:inline" aria-hidden="true" />
@@ -685,12 +788,16 @@ export function App() {
               role="tabpanel"
               aria-labelledby={`tab-${activeView}`}
             >
+              {activeView === 'home' && <InicioView worker={whoamiWorker} />}
+
               {activeView === 'calendar' && (
                 <CalendarView
                   workers={filteredWorkers}
                   dates={dataset.dates}
                   editMode={editMode}
                   onCellEdit={handleCellEdit}
+                  whoami={whoami}
+                  onWhoamiChange={handleWhoamiChange}
                 />
               )}
 
@@ -719,6 +826,69 @@ export function App() {
           </div>
         )}
       </main>
+
+      {editMode && (
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".csv,text/csv"
+          onChange={handleCsvFileUpload}
+          className="hidden"
+        />
+      )}
+
+      {/* Phone menu drawer: navigation, exports and edit controls */}
+      {menuOpen && (
+        <>
+          <div
+            className="animate-backdrop-in fixed inset-0 z-40 bg-slate-950/60 sm:hidden"
+            onClick={() => setMenuOpen(false)}
+            aria-hidden="true"
+          />
+          <aside
+            role="dialog"
+            aria-modal="true"
+            aria-label="Menu"
+            className="animate-drawer-in fixed inset-y-0 right-0 z-50 flex w-[300px] max-w-[85vw] flex-col gap-4 overflow-y-auto border-l border-slate-800 bg-slate-900 p-4 shadow-2xl sm:hidden"
+          >
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-semibold text-white">Menu</span>
+              <button
+                type="button"
+                onClick={() => setMenuOpen(false)}
+                aria-label="Fechar menu"
+                className="rounded-lg border border-slate-700 px-2.5 py-0.5 text-sm text-slate-300 hover:bg-slate-800 cursor-pointer"
+              >
+                ×
+              </button>
+            </div>
+
+            <nav aria-label="Visualizações da escala" className="flex flex-col gap-1">
+              {navItems.map(({ view, label, Icon }) => (
+                <button
+                  key={view}
+                  type="button"
+                  aria-current={activeView === view ? 'page' : undefined}
+                  onClick={() => {
+                    setActiveView(view);
+                    setMenuOpen(false);
+                  }}
+                  className={`inline-flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-semibold cursor-pointer ${
+                    activeView === view
+                      ? 'bg-indigo-500/15 text-indigo-300'
+                      : 'text-slate-300 hover:bg-slate-800'
+                  }`}
+                >
+                  <Icon className="h-4 w-4" aria-hidden="true" />
+                  {label}
+                </button>
+              ))}
+            </nav>
+
+            <div className="flex flex-col gap-3 border-t border-slate-800 pt-4">{actionsContent}</div>
+          </aside>
+        </>
+      )}
 
       {/* SHA-512 Authentication Modal */}
       <AuthDialog

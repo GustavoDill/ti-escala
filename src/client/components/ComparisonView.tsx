@@ -1,4 +1,5 @@
 import React, { useMemo, useState } from 'react';
+import { useCurrentMonthKey } from '../monthSync.js';
 import {
   CheckSquare,
   Clock,
@@ -51,7 +52,9 @@ export function ComparisonView({
     return Array.from(map.values());
   }, [parsedDates]);
 
-  const [selectedMonthKey, setSelectedMonthKey] = useState<string>('ALL');
+
+  // Starts on the current month; 'ALL' is still available from the picker
+  const [selectedMonthKey, setSelectedMonthKey] = useCurrentMonthKey(months.map((m) => m.key));
 
   const visibleDates = useMemo(() => {
     if (selectedMonthKey === 'ALL') return dates;
@@ -144,7 +147,7 @@ export function ComparisonView({
         </div>
 
         {/* Selectable Worker Chips */}
-        <div className="flex flex-wrap gap-1.5 max-h-36 overflow-y-auto pr-1">
+        <div className="flex flex-wrap gap-1 max-h-[4.5rem] overflow-y-auto pr-1">
           {workers.map((w) => {
             const isChecked = selectedMatriculas.includes(w.matricula);
             return (
@@ -182,7 +185,7 @@ export function ComparisonView({
           </p>
         </div>
       ) : (
-        <div className="rounded-2xl border border-slate-800/90 bg-slate-900/75 overflow-hidden">
+        <div className="rounded-xl border border-slate-800/90 bg-slate-900/75 overflow-auto max-h-[calc(100vh-19rem)]">
           <div
             tabIndex={0}
             role="region"

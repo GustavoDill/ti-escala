@@ -1,4 +1,5 @@
 import React, { useMemo, useState } from 'react';
+import { useCurrentMonthKey } from '../monthSync.js';
 import {
   ArrowDown,
   ArrowUp,
@@ -69,7 +70,6 @@ export function GridView({
   const [sortCol, setSortCol] = useState<SortColumnKey>('nome');
   const [sortDir, setSortDir] = useState<'ascending' | 'descending'>('ascending');
   const [sortStatusText, setSortStatusText] = useState('');
-  const [selectedMonthKey, setSelectedMonthKey] = useState<string>('ALL');
 
   // Inline editing state (either a metadata cell or a date cell)
   const [activeEdit, setActiveEdit] = useState<{
@@ -102,6 +102,9 @@ export function GridView({
     }
     return Array.from(map.values());
   }, [parsedDates]);
+
+  // Starts on the current month; 'ALL' is still available from the picker
+  const [selectedMonthKey, setSelectedMonthKey] = useCurrentMonthKey(months.map((m) => m.key));
 
   const visibleDates = useMemo(() => {
     if (selectedMonthKey === 'ALL') return dates;
@@ -284,7 +287,7 @@ export function GridView({
       )}
 
       {/* Excel-like Sticky Data Table */}
-      <div className="rounded-2xl border border-slate-800/90 bg-slate-900/75 overflow-hidden">
+      <div className="rounded-xl border border-slate-800/90 bg-slate-900/75 overflow-auto max-h-[calc(100vh-13.5rem)]">
         <div
           tabIndex={0}
           role="region"
