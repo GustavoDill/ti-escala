@@ -1,0 +1,12 @@
+# Gradle / Android Studio build output
+.gradle/
+build/
+app/build/
+.idea/
+*.iml
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Machine-specific (sdk.dir)
+local.properties
