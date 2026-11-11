@@ -1,8 +1,8 @@
 import fs from 'node:fs/promises';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
-import type { AppConfig } from './config.js';
-import { parseEscalaCsv, serializeEscalaCsv } from './csv.js';
-import type { ScheduleDataset, ServerSyncStatus, SyncStateCode } from './types.js';
+import type { AppConfig } from './config.ts';
+import { parseEscalaCsv, serializeEscalaCsv } from './csv.ts';
+import type { ScheduleDataset, ServerSyncStatus, SyncStateCode } from './types.ts';
 
 export class ScheduleStorageService {
   private config: AppConfig;

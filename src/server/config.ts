@@ -16,7 +16,7 @@ export interface AppConfig {
 }
 
 export function loadConfig(): AppConfig {
-  const port = Number(process.env.PORT || 3000);
+  const port = Number(process.env.PORT || 35001);
   const nodeEnv = process.env.NODE_ENV || 'development';
   const supabaseUrl = (process.env.SUPABASE_URL || '').trim();
   const supabaseKey = (

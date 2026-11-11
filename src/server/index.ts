@@ -4,10 +4,10 @@ import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
-import { AuthService } from './auth.js';
-import { loadConfig } from './config.js';
-import { createApiRoutes } from './routes.js';
-import { ScheduleStorageService } from './storage.js';
+import { AuthService } from './auth.ts';
+import { loadConfig } from './config.ts';
+import { createApiRoutes } from './routes.ts';
+import { ScheduleStorageService } from './storage.ts';
 
 export async function createApp() {
   const config = loadConfig();
@@ -60,9 +60,8 @@ export async function createApp() {
 }
 
 // Start server if invoked directly
-const isMain =
-  process.argv[1] &&
-  (process.argv[1].endsWith('index.ts') || process.argv[1].endsWith('index.js'));
+const entryArg = (process.argv[1] || '').replace(/\\/g, '/');
+const isMain = entryArg.endsWith('server/index.ts') || entryArg.endsWith('server/index.js');
 
 if (isMain) {
   createApp()

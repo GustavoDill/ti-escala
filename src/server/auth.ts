@@ -1,8 +1,8 @@
 import crypto from 'node:crypto';
 import type { Context, Next } from 'hono';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
-import type { AppConfig } from './config.js';
-import type { AuthRole } from './types.js';
+import type { AppConfig } from './config.ts';
+import type { AuthRole } from './types.ts';
 
 export function hashPasswordSha512(plainPassword: string): string {
   return crypto.createHash('sha512').update(plainPassword, 'utf8').digest('hex');

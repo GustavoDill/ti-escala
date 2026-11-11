@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { AuthService, hashPasswordSha512, safeCompareHexHashes } from '../src/server/auth.js';
-import type { AppConfig } from '../src/server/config.js';
-import { decodeCsvBuffer, parseEscalaCsv, serializeEscalaCsv } from '../src/server/csv.js';
-import { createApiRoutes } from '../src/server/routes.js';
-import { ScheduleStorageService } from '../src/server/storage.js';
+import { AuthService, hashPasswordSha512, safeCompareHexHashes } from '../src/server/auth.ts';
+import type { AppConfig } from '../src/server/config.ts';
+import { decodeCsvBuffer, parseEscalaCsv, serializeEscalaCsv } from '../src/server/csv.ts';
+import { createApiRoutes } from '../src/server/routes.ts';
+import { ScheduleStorageService } from '../src/server/storage.ts';
 
 const SAMPLE_CSV = [
   'MATRICULA;Nome;SETOR;FUNÇÃO;SABADO;DOMINGO;ESCALA;ENTR;INI INTER;RET INTER;ESCALA; SAI;TOTAL INTERVALO;TOTAL LOGADO;28/09/2026;29/09/2026;30/09/2026',
@@ -92,4 +92,31 @@ test('API aborts main functionality with 503 when escala.csv is not available in
   const body = (await res.json()) as { aborted: boolean; error: string };
   assert.equal(body.aborted, true);
   assert.ok(body.error.includes('Funcionalidade principal abortada'));
+});
+
+test('raw CSV route (/escala/raw) also aborts with 503 when escala.csv is not available', async () => {
+  const unconfiguredConfig: AppConfig = {
+    port: 3000,
+    nodeEnv: 'test',
+    supabaseUrl: '',
+    supabaseKey: '',
+    supabaseBucket: 'escala',
+    supabaseFilePath: 'escala.csv',
+    supabaseAuthTable: 'escala_auth',
+    cacheDir: '.cache-test',
+    cacheFilePath: '.cache-test/escala.csv',
+    isConfigured: false,
+    missingVars: ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY'],
+  };
+
+  const storage = new ScheduleStorageService(unconfiguredConfig);
+  const auth = new AuthService(unconfiguredConfig);
+  await storage.syncFromSupabase();
+
+  const api = createApiRoutes(storage, auth);
+
+  const res = await api.request('/escala/raw');
+  assert.equal(res.status, 503);
+  const body = (await res.json()) as { aborted: boolean };
+  assert.equal(body.aborted, true);
 });

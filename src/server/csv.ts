@@ -1,4 +1,4 @@
-import type { ScheduleDataset, WorkerScheduleRow } from './types.js';
+import type { ScheduleDataset, WorkerScheduleRow } from './types.ts';
 
 export const FIXED_CSV_HEADERS = [
   'MATRICULA',

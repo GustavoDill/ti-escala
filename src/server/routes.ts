@@ -1,7 +1,8 @@
 import { Hono } from 'hono';
-import type { AuthService } from './auth.js';
-import type { ScheduleStorageService } from './storage.js';
-import type { AuthRole, ScheduleDataset, WorkerMetadata } from './types.js';
+import type { AuthService } from './auth.ts';
+import { getNationalHolidays } from './holidays.ts';
+import type { ScheduleStorageService } from './storage.ts';
+import type { AuthRole, ScheduleDataset, WorkerMetadata } from './types.ts';
 
 type Variables = {
   authRole: AuthRole;
@@ -18,6 +19,15 @@ export function createApiRoutes(
     return c.json({
       status: storage.getStatus(),
     });
+  });
+
+  // 1b. National holidays for a year (BrasilAPI, cached; bundled fallback if unavailable)
+  api.get('/feriados/:year', async (c) => {
+    const year = Number(c.req.param('year'));
+    if (!Number.isInteger(year) || year < 2000 || year > 2100) {
+      return c.json({ error: 'Ano inválido. Use um ano entre 2000 e 2100.' }, 400);
+    }
+    return c.json(await getNationalHolidays(year));
   });
 
   // 2. Read-Only Schedule Data (aborts with 503 if escala.csv is missing from bucket)
