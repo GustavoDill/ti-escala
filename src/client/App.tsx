@@ -25,6 +25,7 @@ import { ComparisonView } from './components/ComparisonView.js';
 import { GridView } from './components/GridView.js';
 import { InicioView } from './components/InicioView.js';
 import { exportToCsv, exportToPdf, exportToXlsx } from './exportUtils.js';
+import { insertDateChronologically } from './calendarMonth.js';
 import { loadNationalHolidays } from './holidays.js';
 import { readWhoami, writeWhoami } from './whoami.js';
 import type {
@@ -211,19 +212,35 @@ export function App() {
     (matricula: string, date: string, newValue: string) => {
       if (!dataset || !editMode) return;
 
+      const trimmed = newValue.trim();
+      const dateAlreadyExists = dataset.dates.includes(date);
+      const currentWorker = dataset.workers.find((w) => w.matricula === matricula);
+      const currentVal = (currentWorker?.days[date] ?? '').trim();
+
+      // Avoid a no-op write when confirming an empty value on an already unplanned date
+      if (!dateAlreadyExists && trimmed === '' && currentVal === '') {
+        return;
+      }
+
+      const nextDates =
+        !dateAlreadyExists && trimmed !== ''
+          ? insertDateChronologically(dataset.dates, date)
+          : dataset.dates;
+
       const updatedWorkers = dataset.workers.map((w) => {
         if (w.matricula !== matricula) return w;
         return {
           ...w,
           days: {
             ...w.days,
-            [date]: newValue,
+            [date]: trimmed,
           },
         };
       });
 
       const nextDataset: ScheduleDataset = {
         ...dataset,
+        dates: nextDates,
         workers: updatedWorkers,
       };
 
@@ -315,7 +332,7 @@ export function App() {
         showToast(`A data ${newDate} já existe na escala.`);
         return;
       }
-      const nextDates = [...dataset.dates, newDate];
+      const nextDates = insertDateChronologically(dataset.dates, newDate);
       const nextWorkers = dataset.workers.map((w) => ({
         ...w,
         days: { ...w.days, [newDate]: '08:48' },

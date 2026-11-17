@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { AuthService, hashPasswordSha512, safeCompareHexHashes } from '../src/server/auth.ts';
 import type { AppConfig } from '../src/server/config.ts';
-import { decodeCsvBuffer, parseEscalaCsv, serializeEscalaCsv } from '../src/server/csv.ts';
+import { decodeCsvBuffer, insertDateChronologically, parseEscalaCsv, serializeEscalaCsv } from '../src/server/csv.ts';
 import { createApiRoutes } from '../src/server/routes.ts';
 import { ScheduleStorageService } from '../src/server/storage.ts';
 
@@ -119,4 +119,18 @@ test('raw CSV route (/escala/raw) also aborts with 503 when escala.csv is not av
   assert.equal(res.status, 503);
   const body = (await res.json()) as { aborted: boolean };
   assert.equal(body.aborted, true);
+});
+
+test('inserting a future date chronologically keeps other workers blank across CSV round-trip', () => {
+  const dataset = parseEscalaCsv(SAMPLE_CSV);
+  const nextDates = insertDateChronologically(dataset.dates, '15/01/2027');
+  dataset.dates = nextDates;
+  dataset.workers[0].days['15/01/2027'] = 'FOLGA';
+
+  const serialized = serializeEscalaCsv(dataset);
+  const reparsed = parseEscalaCsv(serialized);
+
+  assert.deepEqual(reparsed.dates, ['28/09/2026', '29/09/2026', '30/09/2026', '15/01/2027']);
+  assert.equal(reparsed.workers[0].days['15/01/2027'], 'FOLGA');
+  assert.equal(reparsed.workers[1].days['15/01/2027'], '');
 });

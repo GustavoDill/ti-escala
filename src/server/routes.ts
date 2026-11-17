@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import type { AuthService } from './auth.ts';
+import { insertDateChronologically } from './csv.ts';
 import { getNationalHolidays } from './holidays.ts';
 import type { ScheduleStorageService } from './storage.ts';
 import type { AuthRole, ScheduleDataset, WorkerMetadata } from './types.ts';
@@ -172,6 +173,7 @@ export function createApiRoutes(
       }
 
       const current = storage.getDataset();
+      let nextDates = [...current.dates];
       const clonedWorkers = current.workers.map((w) => ({
         ...w,
         days: { ...w.days },
@@ -183,6 +185,9 @@ export function createApiRoutes(
 
         if (edit.date) {
           target.days[edit.date] = edit.value;
+          if (edit.value.trim() !== '') {
+            nextDates = insertDateChronologically(nextDates, edit.date);
+          }
         } else if (edit.field && edit.field in target) {
           target[edit.field] = edit.value;
         }
@@ -190,6 +195,7 @@ export function createApiRoutes(
 
       const status = await storage.updateAndPushDataset({
         ...current,
+        dates: nextDates,
         workers: clonedWorkers,
       });
 

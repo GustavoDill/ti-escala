@@ -243,3 +243,23 @@ ALTER TABLE public.escala_auth ENABLE ROW LEVEL SECURITY;
 3. The app renders at 360px width with no horizontal page scroll on the default view.
 4. `GET /api/escala/raw` still returns the CSV as before (covered by `tests/backend.test.ts`).
 5. Edit Mode, exports, and the missing-CSV abort screen still work.
+
+---
+
+## 9. Full-Month Calendar Display & Future Day Editing (`TASK-017`)
+
+### 9.1 Goal
+- Show **every calendar day (`1..daysInMonth`)** for the active month in `CalendarView` (both `Por Colaborador` and `Calendário da Equipe`), including days not yet present in `escala.csv` or cells with empty values.
+- Allow users and administrators to navigate to **future months** beyond the last date currently in `escala.csv` via month navigation controls (`<` / `>`), and allow admins in Edit Mode to schedule/edit any future or unplanned day.
+
+### 9.2 Visual Differentiation of Unplanned Days
+- **Outside-month padding cells** (`outsideDay`): remain faint day numbers with no border or background.
+- **Unplanned days inside the active month** (date absent from `dataset.dates` or worker cell value is empty): rendered **grayed out with no outline** (`border-transparent`, muted background/text), visually distinct from planned `work`, `FOLGA`, `FÉRIAS`, `ATESTADO`, and `FERIADO` cells.
+- Today's date retains its `Hoje` / orange highlight even if unplanned.
+
+### 9.3 Persisting Edits on Previously Unplanned / Future Dates
+- When an authenticated admin edits a cell for a date not yet in `dataset.dates` (and enters a non-empty value):
+  - The new `DD/MM/YYYY` date is inserted **chronologically** into `dataset.dates`.
+  - All other workers remain **blank (`""`) / unplanned** for that newly added date column.
+  - Both client state (`App.tsx` -> `PUT /api/escala`) and backend batch patch (`PATCH /api/escala/cells`) preserve chronological `dataset.dates` ordering so `serializeEscalaCsv` persists the new column to Supabase without data loss.
+- Changing `dataset.dates` via an edit must not reset the user's currently viewed month back to the current clock month.

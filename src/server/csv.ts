@@ -19,6 +19,20 @@ export const FIXED_CSV_HEADERS = [
 
 export const FIXED_COLUMN_COUNT = FIXED_CSV_HEADERS.length; // 14
 
+export function brDateSortKey(raw: string): string {
+  const parts = raw.trim().split('/');
+  const dd = (parts[0] ?? '01').padStart(2, '0');
+  const mm = (parts[1] ?? '01').padStart(2, '0');
+  const yyyy = (parts[2] ?? '0000').padStart(4, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+export function insertDateChronologically(dates: string[], newDate: string): string[] {
+  const trimmed = newDate.trim();
+  if (!trimmed || dates.includes(trimmed)) return dates;
+  return [...dates, trimmed].sort((a, b) => brDateSortKey(a).localeCompare(brDateSortKey(b)));
+}
+
 /**
  * Decodes a raw CSV byte buffer into a clean UTF-8 string, automatically
  * detecting UTF-8 vs Windows-1252 (Latin-1) exported by Portuguese Excel.

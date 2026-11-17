@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Calendar as CalendarIcon,
   Clock,
@@ -9,15 +9,23 @@ import {
   Check,
   X,
   ChevronLeft,
+  ChevronRight,
 } from 'lucide-react';
-import { getNationalHoliday } from '../holidays.js';
+import {
+  buildCalendarCells,
+  buildMonthDays,
+  formatMonthLabel,
+  parseMonthKey,
+  shiftMonthKey,
+  type CalendarDayInfo,
+} from '../calendarMonth.js';
+import { getNationalHoliday, loadNationalHolidays } from '../holidays.js';
 import { currentMonthKey, pickMonthKey } from '../monthSync.js';
 import {
   classifyShiftValue,
   getShiftBadgeClasses,
   parseBrDate,
   QUICK_SHIFT_VALUES,
-  type ParsedDateInfo,
   type ShiftCategory,
   type WorkerScheduleRow,
 } from '../types.js';
@@ -92,10 +100,13 @@ function buildRosterGroups(workers: WorkerScheduleRow[], date: string): RosterGr
   });
 }
 
-// Day of the previous or next month shown only to complete the grid (no schedule data)
-// Per-worker day cell: the status fills the whole square (folga blue, férias purple, work neutral)
+// Per-worker day cell: planned statuses keep an outline; unplanned days are grayed out with no outline
 function workerCellClasses(cat: ShiftCategory, isWeekend: boolean, isToday: boolean): string {
-  if (isToday) return 'border-orange-400 ring-2 ring-orange-400 bg-orange-500/10 text-slate-100';
+  if (isToday) {
+    return cat === 'empty'
+      ? 'border-orange-400/70 ring-1 ring-orange-400/70 bg-slate-900/40 text-slate-400'
+      : 'border-orange-400 ring-2 ring-orange-400 bg-orange-500/10 text-slate-100';
+  }
   switch (cat) {
     case 'folga':
       return 'border-blue-500/60 bg-blue-500/25 text-blue-100';
@@ -110,15 +121,9 @@ function workerCellClasses(cat: ShiftCategory, isWeekend: boolean, isToday: bool
         ? 'border-slate-800/90 bg-slate-950/75 text-slate-300'
         : 'border-slate-800/80 bg-slate-900/90 text-slate-300';
     default:
-      return 'border-slate-800/60 bg-slate-950/60 text-slate-500';
+      return 'border-transparent bg-slate-900/25 text-slate-500';
   }
 }
-
-interface OutsideDay {
-  outsideDay: number;
-}
-
-type GridCell = ParsedDateInfo | OutsideDay;
 
 // Holiday tag: paid at +100%, shown even when the day is a folga
 function HolidayTag({ isoDate }: { isoDate: string }) {
@@ -147,11 +152,11 @@ export function CalendarView({
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [workerSortBy, setWorkerSortBy] = useState<'nome' | 'setor' | 'funcao' | 'entrada'>('nome');
 
-  // Parse all dates and group by month (YYYY-MM)
+  // Parse all dates and group by month (YYYY-MM), sorted chronologically
   const parsedDates = useMemo(() => dates.map(parseBrDate), [dates]);
 
   const months = useMemo(() => {
-    const map = new Map<string, { key: string; label: string; dates: ParsedDateInfo[] }>();
+    const map = new Map<string, { key: string; label: string; dates: CalendarDayInfo[] }>();
     for (const d of parsedDates) {
       const existing = map.get(d.monthKey);
       if (existing) {
@@ -160,23 +165,53 @@ export function CalendarView({
         map.set(d.monthKey, { key: d.monthKey, label: d.monthLabel, dates: [d] });
       }
     }
-    return Array.from(map.values());
+    return Array.from(map.values()).sort((a, b) => a.key.localeCompare(b.key));
   }, [parsedDates]);
 
-  // The calendar always opens on the current month (or the closest one in the schedule)
-  const availableMonthKeys = months.map((m) => m.key).join(',');
+  // The calendar opens on the current month (or the closest one in the schedule)
+  const datasetMonthKeys = useMemo(() => months.map((m) => m.key), [months]);
   const [clockMonth, setClockMonth] = useState<string>(() => currentMonthKey());
-  const [selectedMonthKey, setSelectedMonthKey] = useState<string>(() =>
-    pickMonthKey(months.map((m) => m.key), currentMonthKey())
+  const prevClockMonthRef = useRef<string>(clockMonth);
+  const [selectedMonthKey, setSelectedMonthKey] = useState<string>(
+    () => pickMonthKey(datasetMonthKeys, currentMonthKey()) || currentMonthKey()
   );
 
-  const activeMonth = useMemo(() => {
-    return months.find((m) => m.key === selectedMonthKey) || months[0] || null;
-  }, [months, selectedMonthKey]);
+  // Build full calendar days (1..daysInMonth) even for partially planned or future months
+  const activeMonthDays = useMemo(() => buildMonthDays(selectedMonthKey), [selectedMonthKey]);
+  const activeMonthLabel = useMemo(() => formatMonthLabel(selectedMonthKey), [selectedMonthKey]);
+
+  // Month pills: all dataset months plus the active future/past month if outside the CSV range
+  const displayedMonthPills = useMemo(() => {
+    const map = new Map<string, { key: string; label: string; hasPlannedDates: boolean }>();
+    for (const m of months) {
+      map.set(m.key, { key: m.key, label: m.label, hasPlannedDates: true });
+    }
+    if (selectedMonthKey && !map.has(selectedMonthKey)) {
+      map.set(selectedMonthKey, {
+        key: selectedMonthKey,
+        label: activeMonthLabel,
+        hasPlannedDates: false,
+      });
+    }
+    return Array.from(map.values()).sort((a, b) => a.key.localeCompare(b.key));
+  }, [months, selectedMonthKey, activeMonthLabel]);
 
   const [selectedDateRaw, setSelectedDateRaw] = useState<string>(() =>
-    dates.includes(todayBrDate()) ? todayBrDate() : activeMonth?.dates[0]?.raw || dates[0] || ''
+    dates.includes(todayBrDate()) ? todayBrDate() : activeMonthDays[0]?.raw || dates[0] || ''
   );
+
+  // Fetch national holidays if the user navigates to a future/past year not yet cached
+  const [, setHolidayTick] = useState(0);
+  const activeYear = parseMonthKey(selectedMonthKey).year;
+  useEffect(() => {
+    let cancelled = false;
+    loadNationalHolidays([activeYear]).then((loaded) => {
+      if (loaded && !cancelled) setHolidayTick((t) => t + 1);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeYear]);
 
   // Inline editing state
   const [editingCell, setEditingCell] = useState<{
@@ -214,21 +249,11 @@ export function CalendarView({
     );
   }, [sortedWorkers, selectedWorkerMatricula, whoami]);
 
-  // Grid cells for the active month, padded with grayed days from the previous and next month
-  const calendarGridCells = useMemo<GridCell[]>(() => {
-    if (!activeMonth || activeMonth.dates.length === 0) return [];
-    const first = activeMonth.dates[0];
-    const leadingCount = first.weekdayIndex;
-    const previousMonthLastDay = new Date(first.year, first.month - 1, 0).getDate();
-    const leading: GridCell[] = Array.from({ length: leadingCount }, (_, i) => ({
-      outsideDay: previousMonthLastDay - leadingCount + 1 + i,
-    }));
-    const trailingCount = (7 - ((leadingCount + activeMonth.dates.length) % 7)) % 7;
-    const trailing: GridCell[] = Array.from({ length: trailingCount }, (_, i) => ({
-      outsideDay: i + 1,
-    }));
-    return [...leading, ...activeMonth.dates, ...trailing];
-  }, [activeMonth]);
+  // Grid cells for the active month (all 1..daysInMonth), padded with outside-month days
+  const calendarGridCells = useMemo(
+    () => buildCalendarCells(selectedMonthKey),
+    [selectedMonthKey]
+  );
 
   // Today's date in DD/MM/YYYY, to highlight it in the grid
   const todayRaw = useMemo(() => {
@@ -238,28 +263,38 @@ export function CalendarView({
     return `${dd}/${mm}/${d.getFullYear()}`;
   }, []);
 
-  // Keep the calendar on the current month: re-check every minute, so it also moves on at midnight
+  // Re-check every minute so the calendar advances when the clock month rolls over at midnight
   useEffect(() => {
     const timer = window.setInterval(() => setClockMonth(currentMonthKey()), 60_000);
     return () => window.clearInterval(timer);
   }, []);
 
   useEffect(() => {
-    setSelectedMonthKey(pickMonthKey(availableMonthKeys.split(',').filter(Boolean), clockMonth));
-    if (dates.includes(todayBrDate())) setSelectedDateRaw(todayBrDate());
-    // availableMonthKeys / clockMonth change only when the schedule's months or the calendar month change
-  }, [availableMonthKeys, clockMonth]);
+    if (prevClockMonthRef.current !== clockMonth) {
+      prevClockMonthRef.current = clockMonth;
+      setSelectedMonthKey(pickMonthKey(datasetMonthKeys, clockMonth) || clockMonth);
+      if (dates.includes(todayBrDate())) setSelectedDateRaw(todayBrDate());
+    }
+  }, [clockMonth, datasetMonthKeys, dates]);
 
-  // Stats for activeWorker in activeMonth
+  const selectMonth = (nextMonthKey: string) => {
+    setSelectedMonthKey(nextMonthKey);
+    setEditingCell(null);
+    const nextDays = buildMonthDays(nextMonthKey);
+    const today = todayBrDate();
+    setSelectedDateRaw(nextDays.some((d) => d.raw === today) ? today : nextDays[0]?.raw || '');
+  };
+
+  // Stats for activeWorker across all days in selectedMonthKey
   const workerMonthStats = useMemo(() => {
-    if (!activeWorker || !activeMonth) {
+    if (!activeWorker || activeMonthDays.length === 0) {
       return { work: 0, folga: 0, ferias: 0, other: 0 };
     }
     let work = 0;
     let folga = 0;
     let ferias = 0;
     let other = 0;
-    for (const d of activeMonth.dates) {
+    for (const d of activeMonthDays) {
       const cat = classifyShiftValue(activeWorker.days[d.raw]);
       if (cat === 'work') work++;
       else if (cat === 'folga') folga++;
@@ -267,25 +302,17 @@ export function CalendarView({
       else if (cat !== 'empty') other++;
     }
     return { work, folga, ferias, other };
-  }, [activeWorker, activeMonth]);
+  }, [activeWorker, activeMonthDays]);
 
   const commitInlineEdit = (matricula: string, date: string, newValue: string) => {
     onCellEdit(matricula, date, newValue.trim());
     setEditingCell(null);
   };
 
-  if (!activeMonth) {
-    return (
-      <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-8 text-center text-slate-400">
-        Nenhuma data disponível na escala atual.
-      </div>
-    );
-  }
-
   const effectiveSelectedDate =
-    activeMonth.dates.some((d) => d.raw === selectedDateRaw)
+    activeMonthDays.some((d) => d.raw === selectedDateRaw)
       ? selectedDateRaw
-      : activeMonth.dates[0]?.raw || '';
+      : activeMonthDays[0]?.raw || '';
 
   return (
     <div className="space-y-4">
@@ -318,26 +345,44 @@ export function CalendarView({
           </button>
         </div>
 
-        {/* Month Selector Pills */}
+        {/* Month Selector Pills + Prev/Next Month Navigation */}
         <div className="flex flex-wrap items-center gap-1.5">
           <span className="text-xs text-slate-400 mr-1 font-medium">Mês:</span>
-          {months.map((m) => (
+          <button
+            type="button"
+            onClick={() => selectMonth(shiftMonthKey(selectedMonthKey, -1))}
+            aria-label="Mês anterior"
+            title="Mês anterior"
+            className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-slate-700/80 bg-slate-800/60 text-slate-300 hover:bg-slate-800 hover:text-white transition-colors cursor-pointer"
+          >
+            <ChevronLeft className="h-4 w-4" aria-hidden="true" />
+          </button>
+          {displayedMonthPills.map((m) => (
             <button
               key={m.key}
               type="button"
-              onClick={() => {
-                setSelectedMonthKey(m.key);
-                if (m.dates[0]) setSelectedDateRaw(m.dates[0].raw);
-              }}
+              onClick={() => selectMonth(m.key)}
               className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-colors cursor-pointer ${
-                activeMonth.key === m.key
+                selectedMonthKey === m.key
                   ? 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/40'
                   : 'bg-slate-800/60 text-slate-400 hover:text-slate-200 border border-transparent'
               }`}
             >
               {m.label}
+              {!m.hasPlannedDates && (
+                <span className="ml-1.5 text-[10px] text-slate-500">(futuro)</span>
+              )}
             </button>
           ))}
+          <button
+            type="button"
+            onClick={() => selectMonth(shiftMonthKey(selectedMonthKey, 1))}
+            aria-label="Próximo mês"
+            title="Próximo mês"
+            className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-slate-700/80 bg-slate-800/60 text-slate-300 hover:bg-slate-800 hover:text-white transition-colors cursor-pointer"
+          >
+            <ChevronRight className="h-4 w-4" aria-hidden="true" />
+          </button>
         </div>
 
         {/* Sort selector */}
@@ -365,12 +410,12 @@ export function CalendarView({
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
           {/* Team Monthly Calendar Grid (8 cols) */}
           <div className="lg:col-span-12 rounded-2xl border border-slate-800/90 bg-slate-900/70 p-4 isolated-section">
-            <div className="flex items-center justify-between mb-3">
+            <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
               <h2 className="text-sm font-semibold text-white flex items-center gap-2">
                 <CalendarIcon className="h-4 w-4 text-indigo-400" aria-hidden="true" />
-                Visão Mensal — {activeMonth.label}
+                Visão Mensal — {activeMonthLabel}
               </h2>
-              <div className="flex items-center gap-3 text-[11px] text-slate-400">
+              <div className="flex flex-wrap items-center gap-3 text-[11px] text-slate-400">
                 <span className="inline-flex items-center gap-1">
                   <span className="h-2 w-2 rounded-full border border-slate-500" /> Trabalho
                 </span>
@@ -379,6 +424,9 @@ export function CalendarView({
                 </span>
                 <span className="inline-flex items-center gap-1">
                   <span className="h-2 w-2 rounded-full bg-purple-400" /> Férias
+                </span>
+                <span className="inline-flex items-center gap-1">
+                  <span className="h-2 w-2 rounded-full bg-slate-700" /> Não planejado
                 </span>
               </div>
             </div>
@@ -404,22 +452,26 @@ export function CalendarView({
                   return (
                     <div
                       key={`outside-${idx}`}
-                      className="min-h-[56px] p-1.5 text-sm font-medium text-slate-600"
+                      className="min-h-[56px] p-1.5 text-sm font-medium text-slate-700"
                     >
                       {cellDate.outsideDay}
                     </div>
                   );
                 }
 
-                // Working staff per função (N1 / N2 / N3) on this day
+                // Working staff per função (N1 / N2 / N3) on this day + whether any worker is planned
                 const roleCounts = { N1: 0, N2: 0, N3: 0 };
+                let hasPlannedEntries = false;
 
                 for (const w of sortedWorkers) {
-                  if (classifyShiftValue(w.days[cellDate.raw]) !== 'work') continue;
+                  const cat = classifyShiftValue(w.days[cellDate.raw]);
+                  if (cat !== 'empty') hasPlannedEntries = true;
+                  if (cat !== 'work') continue;
                   if (w.funcao in roleCounts) roleCounts[w.funcao as keyof typeof roleCounts]++;
                 }
 
                 const isSelected = cellDate.raw === effectiveSelectedDate;
+                const isToday = cellDate.raw === todayRaw;
 
                 return (
                   <button
@@ -432,6 +484,8 @@ export function CalendarView({
                     className={`group relative min-h-[56px] rounded-xl border p-1.5 text-left transition-all flex flex-col justify-between cursor-pointer ${
                       isSelected
                         ? 'border-indigo-500 bg-indigo-500/15 ring-2 ring-indigo-500/30'
+                        : !hasPlannedEntries
+                        ? 'border-transparent bg-slate-900/25 text-slate-500 hover:bg-slate-800/45'
                         : cellDate.isWeekend
                         ? 'border-slate-800/90 bg-slate-950/75 hover:border-slate-700'
                         : 'border-slate-800/80 bg-slate-900/90 hover:border-slate-700'
@@ -440,10 +494,12 @@ export function CalendarView({
                     <div className="flex items-center justify-between w-full">
                       <span
                         className={`inline-flex h-6 w-6 items-center justify-center rounded-lg text-xs font-bold ${
-                          cellDate.raw === todayRaw
+                          isToday
                             ? 'rounded-full bg-orange-400 text-slate-950'
                             : isSelected
                             ? 'bg-indigo-500 text-white'
+                            : !hasPlannedEntries
+                            ? 'text-slate-500 font-medium'
                             : cellDate.isWeekend
                             ? 'text-indigo-300 bg-indigo-500/10'
                             : 'text-slate-200'
@@ -453,19 +509,31 @@ export function CalendarView({
                       </span>
                       <span className="flex items-center gap-1">
                         <HolidayTag isoDate={cellDate.isoDate} />
-                        <span className="hidden text-[10px] font-mono text-slate-500 sm:inline">
+                        <span
+                          className={`hidden text-[10px] font-mono sm:inline ${
+                            hasPlannedEntries ? 'text-slate-500' : 'text-slate-600'
+                          }`}
+                        >
                           {cellDate.raw.slice(0, 5)}
                         </span>
                       </span>
                     </div>
 
-                    <div className="mt-1 flex w-full items-center justify-between pr-0 font-mono text-[11px] font-bold sm:pr-3">
-                      <span className="text-amber-300" title="N1" aria-label={`N1: ${roleCounts.N1}`}><span className="hidden sm:inline">N1 </span>{roleCounts.N1}</span>
-                      <span className="text-cyan-300" title="N2" aria-label={`N2: ${roleCounts.N2}`}><span className="hidden sm:inline">N2 </span>{roleCounts.N2}</span>
-                      <span className="text-rose-300" title="N3" aria-label={`N3: ${roleCounts.N3}`}><span className="hidden sm:inline">N3 </span>{roleCounts.N3}</span>
-                    </div>
+                    {hasPlannedEntries ? (
+                      <div className="mt-1 flex w-full items-center justify-between pr-0 font-mono text-[11px] font-bold sm:pr-3">
+                        <span className="text-amber-300" title="N1" aria-label={`N1: ${roleCounts.N1}`}><span className="hidden sm:inline">N1 </span>{roleCounts.N1}</span>
+                        <span className="text-cyan-300" title="N2" aria-label={`N2: ${roleCounts.N2}`}><span className="hidden sm:inline">N2 </span>{roleCounts.N2}</span>
+                        <span className="text-rose-300" title="N3" aria-label={`N3: ${roleCounts.N3}`}><span className="hidden sm:inline">N3 </span>{roleCounts.N3}</span>
+                      </div>
+                    ) : (
+                      <div className="mt-1 flex w-full items-center justify-between pr-0 font-mono text-[10px] text-slate-600 sm:pr-3">
+                        <span>Não planejado</span>
+                      </div>
+                    )}
                     <ChevronLeft
-                      className="pointer-events-none absolute bottom-1 right-1 hidden h-4 w-4 text-slate-300 sm:block transition-transform group-hover:-translate-x-0.5 group-hover:text-indigo-300"
+                      className={`pointer-events-none absolute bottom-1 right-1 hidden h-4 w-4 sm:block transition-transform group-hover:-translate-x-0.5 group-hover:text-indigo-300 ${
+                        hasPlannedEntries ? 'text-slate-300' : 'text-slate-600'
+                      }`}
                       aria-hidden="true"
                     />
                   </button>
@@ -732,13 +800,18 @@ export function CalendarView({
                     ))}
                   </div>
 
-                  <div className="grid min-h-0 flex-1 grid-cols-7 grid-rows-[repeat(6,minmax(36px,1fr))] gap-1">
+                  <div
+                    className="grid min-h-0 flex-1 grid-cols-7 gap-1"
+                    style={{
+                      gridTemplateRows: `repeat(${Math.max(1, Math.ceil(calendarGridCells.length / 7))}, minmax(36px, 1fr))`,
+                    }}
+                  >
                     {calendarGridCells.map((cellDate, idx) => {
                       if ('outsideDay' in cellDate) {
                         return (
                           <div
                             key={`worker-outside-${idx}`}
-                            className="min-h-[56px] p-1.5 text-sm font-medium text-slate-600"
+                            className="min-h-[36px] p-1.5 text-xs font-medium text-slate-700"
                           >
                             {cellDate.outsideDay}
                           </div>
@@ -747,6 +820,8 @@ export function CalendarView({
 
                       const val = activeWorker.days[cellDate.raw] ?? '';
                       const cat = classifyShiftValue(val);
+                      const isUnplanned = cat === 'empty';
+                      const isToday = cellDate.raw === todayRaw;
                       const isEditingThis =
                         editingCell?.matricula === activeWorker.matricula &&
                         editingCell?.date === cellDate.raw;
@@ -762,16 +837,22 @@ export function CalendarView({
                               value: val,
                             });
                           }}
-                          className={`relative flex min-h-[36px] flex-col overflow-hidden rounded-xl border transition-all ${workerCellClasses(cat, cellDate.isWeekend, cellDate.raw === todayRaw)} ${
-                            editMode ? 'cursor-pointer hover:brightness-125' : ''
+                          className={`relative flex min-h-[36px] flex-col overflow-hidden rounded-xl border transition-all ${workerCellClasses(cat, cellDate.isWeekend, isToday)} ${
+                            editMode
+                              ? isUnplanned
+                                ? 'cursor-pointer hover:bg-slate-800/45 hover:text-slate-300'
+                                : 'cursor-pointer hover:brightness-125'
+                              : ''
                           }`}
                         >
                           {/* Day number and holiday / weekday sit on top of the status fill */}
                           <div className="pointer-events-none absolute inset-x-1 top-0.5 z-10 flex h-4 items-center justify-between leading-4">
                             <span
                               className={
-                                cellDate.raw === todayRaw
+                                isToday
                                   ? 'inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-orange-400 px-1 text-[10px] font-extrabold leading-none text-slate-950'
+                                  : isUnplanned
+                                  ? 'text-xs font-medium text-slate-500'
                                   : 'text-xs font-bold text-slate-100'
                               }
                             >
@@ -782,16 +863,24 @@ export function CalendarView({
                             ) : (
                               <span
                                 className={`hidden truncate text-[10px] font-mono sm:inline ${
-                                  cellDate.raw === todayRaw ? 'font-bold text-orange-300' : 'opacity-70'
+                                  isToday
+                                    ? 'font-bold text-orange-300'
+                                    : isUnplanned
+                                    ? 'text-slate-600'
+                                    : 'opacity-70'
                                 }`}
                               >
-                                {cellDate.raw === todayRaw ? 'Hoje' : cellDate.weekdayShort}
+                                {isToday ? 'Hoje' : cellDate.weekdayShort}
                               </span>
                             )}
                           </div>
 
                           {!isEditingThis ? (
-                            <div className="flex flex-1 items-center justify-center px-0.5 pt-4 font-mono text-[10px] font-bold sm:px-1 sm:text-sm">
+                            <div
+                              className={`flex flex-1 items-center justify-center px-0.5 pt-4 font-mono text-[10px] sm:px-1 sm:text-sm ${
+                                isUnplanned ? 'font-normal text-slate-600' : 'font-bold'
+                              }`}
+                            >
                               {val || '—'}
                             </div>
                           ) : (
